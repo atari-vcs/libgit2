@@ -9,7 +9,7 @@
 
 #include "repository.h"
 #include "posix.h"
-#include "fileops.h"
+#include "futils.h"
 #include "index.h"
 #include "diff_xdiff.h"
 #include "merge.h"
@@ -28,7 +28,7 @@
 
 #define GIT_MERGE_FILE_SIDE_EXISTS(X)	((X)->mode != 0)
 
-int git_merge_file__input_from_index(
+static int merge_file_input_from_index(
 	git_merge_file_input *input_out,
 	git_odb_object **odb_object_out,
 	git_odb *odb,
@@ -130,7 +130,7 @@ static int merge_file__xdiff(
 
 	if ((xdl_result = xdl_merge(&ancestor_mmfile, &our_mmfile,
 		&their_mmfile, &xmparam, &mmbuffer)) < 0) {
-		giterr_set(GITERR_MERGE, "failed to merge files");
+		git_error_set(GIT_ERROR_MERGE, "failed to merge files");
 		error = -1;
 		goto done;
 	}
@@ -276,17 +276,15 @@ int git_merge_file_from_index(
 		goto done;
 
 	if (ancestor) {
-		if ((error = git_merge_file__input_from_index(
+		if ((error = merge_file_input_from_index(
 			&ancestor_input, &odb_object[0], odb, ancestor)) < 0)
 			goto done;
 
 		ancestor_ptr = &ancestor_input;
 	}
 
-	if ((error = git_merge_file__input_from_index(
-			&our_input, &odb_object[1], odb, ours)) < 0 ||
-		(error = git_merge_file__input_from_index(
-			&their_input, &odb_object[2], odb, theirs)) < 0)
+	if ((error = merge_file_input_from_index(&our_input, &odb_object[1], odb, ours)) < 0 ||
+	    (error = merge_file_input_from_index(&their_input, &odb_object[2], odb, theirs)) < 0)
 		goto done;
 
 	error = merge_file__from_inputs(out,

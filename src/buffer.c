@@ -18,7 +18,8 @@ char git_buf__initbuf[1];
 char git_buf__oom[1];
 
 #define ENSURE_SIZE(b, d) \
-	if ((d) > (b)->asize && git_buf_grow((b), (d)) < 0)\
+	if ((b)->ptr == git_buf__oom || \
+	    ((d) > (b)->asize && git_buf_grow((b), (d)) < 0))\
 		return -1;
 
 
@@ -43,7 +44,7 @@ int git_buf_try_grow(
 		return -1;
 
 	if (buf->asize == 0 && buf->size != 0) {
-		giterr_set(GITERR_INVALID, "cannot grow a borrowed buffer");
+		git_error_set(GIT_ERROR_INVALID, "cannot grow a borrowed buffer");
 		return GIT_EINVALID;
 	}
 
@@ -58,22 +59,28 @@ int git_buf_try_grow(
 		new_ptr = NULL;
 	} else {
 		new_size = buf->asize;
+		/*
+		 * Grow the allocated buffer by 1.5 to allow
+		 * re-use of memory holes resulting from the
+		 * realloc. If this is still too small, then just
+		 * use the target size.
+		 */
+		if ((new_size = (new_size << 1) - (new_size >> 1)) < target_size)
+			new_size = target_size;
 		new_ptr = buf->ptr;
 	}
-
-	/* grow the buffer size by 1.5, until it's big enough
-	 * to fit our target size */
-	while (new_size < target_size)
-		new_size = (new_size << 1) - (new_size >> 1);
 
 	/* round allocation up to multiple of 8 */
 	new_size = (new_size + 7) & ~7;
 
 	if (new_size < buf->size) {
-		if (mark_oom)
+		if (mark_oom) {
+			if (buf->ptr && buf->ptr != git_buf__initbuf)
+				git__free(buf->ptr);
 			buf->ptr = git_buf__oom;
+		}
 
-		giterr_set_oom();
+		git_error_set_oom();
 		return -1;
 	}
 
@@ -116,7 +123,7 @@ int git_buf_grow_by(git_buf *buffer, size_t additional_size)
 	return git_buf_try_grow(buffer, newsize, true);
 }
 
-void git_buf_free(git_buf *buf)
+void git_buf_dispose(git_buf *buf)
 {
 	if (!buf) return;
 
@@ -125,6 +132,13 @@ void git_buf_free(git_buf *buf)
 
 	git_buf_init(buf, 0);
 }
+
+#ifndef GIT_DEPRECATE_HARD
+void git_buf_free(git_buf *buf)
+{
+	git_buf_dispose(buf);
+}
+#endif
 
 void git_buf_sanitize(git_buf *buf)
 {
@@ -156,7 +170,7 @@ int git_buf_set(git_buf *buf, const void *data, size_t len)
 		git_buf_clear(buf);
 	} else {
 		if (data != buf->ptr) {
-			GITERR_CHECK_ALLOC_ADD(&alloclen, len, 1);
+			GIT_ERROR_CHECK_ALLOC_ADD(&alloclen, len, 1);
 			ENSURE_SIZE(buf, alloclen);
 			memmove(buf->ptr, data, len);
 		}
@@ -187,7 +201,7 @@ int git_buf_sets(git_buf *buf, const char *string)
 int git_buf_putc(git_buf *buf, char c)
 {
 	size_t new_size;
-	GITERR_CHECK_ALLOC_ADD(&new_size, buf->size, 2);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, buf->size, 2);
 	ENSURE_SIZE(buf, new_size);
 	buf->ptr[buf->size++] = c;
 	buf->ptr[buf->size] = '\0';
@@ -197,8 +211,8 @@ int git_buf_putc(git_buf *buf, char c)
 int git_buf_putcn(git_buf *buf, char c, size_t len)
 {
 	size_t new_size;
-	GITERR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
-	GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 	ENSURE_SIZE(buf, new_size);
 	memset(buf->ptr + buf->size, c, len);
 	buf->size += len;
@@ -213,8 +227,8 @@ int git_buf_put(git_buf *buf, const char *data, size_t len)
 
 		assert(data);
 
-		GITERR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
-		GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+		GIT_ERROR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
+		GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 		ENSURE_SIZE(buf, new_size);
 		memmove(buf->ptr + buf->size, data, len);
 		buf->size += len;
@@ -239,9 +253,9 @@ int git_buf_encode_base64(git_buf *buf, const char *data, size_t len)
 	const uint8_t *read = (const uint8_t *)data;
 	size_t blocks = (len / 3) + !!extra, alloclen;
 
-	GITERR_CHECK_ALLOC_ADD(&blocks, blocks, 1);
-	GITERR_CHECK_ALLOC_MULTIPLY(&alloclen, blocks, 4);
-	GITERR_CHECK_ALLOC_ADD(&alloclen, alloclen, buf->size);
+	GIT_ERROR_CHECK_ALLOC_ADD(&blocks, blocks, 1);
+	GIT_ERROR_CHECK_ALLOC_MULTIPLY(&alloclen, blocks, 4);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloclen, alloclen, buf->size);
 
 	ENSURE_SIZE(buf, alloclen);
 	write = (uint8_t *)&buf->ptr[buf->size];
@@ -301,13 +315,13 @@ int git_buf_decode_base64(git_buf *buf, const char *base64, size_t len)
 	size_t orig_size = buf->size, new_size;
 
 	if (len % 4) {
-		giterr_set(GITERR_INVALID, "invalid base64 input");
+		git_error_set(GIT_ERROR_INVALID, "invalid base64 input");
 		return -1;
 	}
 
 	assert(len % 4 == 0);
-	GITERR_CHECK_ALLOC_ADD(&new_size, (len / 4 * 3), buf->size);
-	GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, (len / 4 * 3), buf->size);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 	ENSURE_SIZE(buf, new_size);
 
 	for (i = 0; i < len; i += 4) {
@@ -318,7 +332,7 @@ int git_buf_decode_base64(git_buf *buf, const char *base64, size_t len)
 			buf->size = orig_size;
 			buf->ptr[buf->size] = '\0';
 
-			giterr_set(GITERR_INVALID, "invalid base64 input");
+			git_error_set(GIT_ERROR_INVALID, "invalid base64 input");
 			return -1;
 		}
 
@@ -338,9 +352,9 @@ int git_buf_encode_base85(git_buf *buf, const char *data, size_t len)
 {
 	size_t blocks = (len / 4) + !!(len % 4), alloclen;
 
-	GITERR_CHECK_ALLOC_MULTIPLY(&alloclen, blocks, 5);
-	GITERR_CHECK_ALLOC_ADD(&alloclen, alloclen, buf->size);
-	GITERR_CHECK_ALLOC_ADD(&alloclen, alloclen, 1);
+	GIT_ERROR_CHECK_ALLOC_MULTIPLY(&alloclen, blocks, 5);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloclen, alloclen, buf->size);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloclen, alloclen, 1);
 
 	ENSURE_SIZE(buf, alloclen);
 
@@ -351,7 +365,7 @@ int git_buf_encode_base85(git_buf *buf, const char *data, size_t len)
 
 		for (i = 24; i >= 0; i -= 8) {
 			uint8_t ch = *data++;
-			acc |= ch << i;
+			acc |= (uint32_t)ch << i;
 
 			if (--len == 0)
 				break;
@@ -403,12 +417,12 @@ int git_buf_decode_base85(
 
 	if (base85_len % 5 ||
 		output_len > base85_len * 4 / 5) {
-		giterr_set(GITERR_INVALID, "invalid base85 input");
+		git_error_set(GIT_ERROR_INVALID, "invalid base85 input");
 		return -1;
 	}
 
-	GITERR_CHECK_ALLOC_ADD(&new_size, output_len, buf->size);
-	GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, output_len, buf->size);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 	ENSURE_SIZE(buf, new_size);
 
 	while (output_len) {
@@ -435,7 +449,7 @@ int git_buf_decode_base85(
 
 		acc += de;
 
-		cnt = (output_len < 4) ? output_len : 4;
+		cnt = (output_len < 4) ? (int)output_len : 4;
 		output_len -= cnt;
 		do {
 			acc = (acc << 8) | (acc >> 24);
@@ -451,7 +465,7 @@ on_error:
 	buf->size = orig_size;
 	buf->ptr[buf->size] = '\0';
 
-	giterr_set(GITERR_INVALID, "invalid base85 input");
+	git_error_set(GIT_ERROR_INVALID, "invalid base85 input");
 	return -1;
 }
 
@@ -464,8 +478,8 @@ int git_buf_decode_percent(
 {
 	size_t str_pos, new_size;
 
-	GITERR_CHECK_ALLOC_ADD(&new_size, buf->size, str_len);
-	GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, buf->size, str_len);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 	ENSURE_SIZE(buf, new_size);
 
 	for (str_pos = 0; str_pos < str_len; buf->size++, str_pos++) {
@@ -490,8 +504,8 @@ int git_buf_vprintf(git_buf *buf, const char *format, va_list ap)
 	size_t expected_size, new_size;
 	int len;
 
-	GITERR_CHECK_ALLOC_MULTIPLY(&expected_size, strlen(format), 2);
-	GITERR_CHECK_ALLOC_ADD(&expected_size, expected_size, buf->size);
+	GIT_ERROR_CHECK_ALLOC_MULTIPLY(&expected_size, strlen(format), 2);
+	GIT_ERROR_CHECK_ALLOC_ADD(&expected_size, expected_size, buf->size);
 	ENSURE_SIZE(buf, expected_size);
 
 	while (1) {
@@ -517,8 +531,8 @@ int git_buf_vprintf(git_buf *buf, const char *format, va_list ap)
 			break;
 		}
 
-		GITERR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
-		GITERR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
+		GIT_ERROR_CHECK_ALLOC_ADD(&new_size, buf->size, len);
+		GIT_ERROR_CHECK_ALLOC_ADD(&new_size, new_size, 1);
 		ENSURE_SIZE(buf, new_size);
 	}
 
@@ -553,6 +567,11 @@ void git_buf_copy_cstr(char *data, size_t datasize, const git_buf *buf)
 		copylen = datasize - 1;
 	memmove(data, buf->ptr, copylen);
 	data[copylen] = '\0';
+}
+
+void git_buf_consume_bytes(git_buf *buf, size_t len)
+{
+	git_buf_consume(buf, buf->ptr + len);
 }
 
 void git_buf_consume(git_buf *buf, const char *end)
@@ -610,7 +629,7 @@ char *git_buf_detach(git_buf *buf)
 
 int git_buf_attach(git_buf *buf, char *ptr, size_t asize)
 {
-	git_buf_free(buf);
+	git_buf_dispose(buf);
 
 	if (ptr) {
 		buf->ptr = ptr;
@@ -628,7 +647,7 @@ int git_buf_attach(git_buf *buf, char *ptr, size_t asize)
 void git_buf_attach_notowned(git_buf *buf, const char *ptr, size_t size)
 {
 	if (git_buf_is_allocated(buf))
-		git_buf_free(buf);
+		git_buf_dispose(buf);
 
 	if (!size) {
 		git_buf_init(buf, 0);
@@ -662,10 +681,10 @@ int git_buf_join_n(git_buf *buf, char separator, int nbuf, ...)
 
 		segment_len = strlen(segment);
 
-		GITERR_CHECK_ALLOC_ADD(&total_size, total_size, segment_len);
+		GIT_ERROR_CHECK_ALLOC_ADD(&total_size, total_size, segment_len);
 
 		if (segment_len == 0 || segment[segment_len - 1] != separator)
-			GITERR_CHECK_ALLOC_ADD(&total_size, total_size, 1);
+			GIT_ERROR_CHECK_ALLOC_ADD(&total_size, total_size, 1);
 	}
 	va_end(ap);
 
@@ -673,7 +692,7 @@ int git_buf_join_n(git_buf *buf, char separator, int nbuf, ...)
 	if (total_size == 0)
 		return 0;
 
-	GITERR_CHECK_ALLOC_ADD(&total_size, total_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&total_size, total_size, 1);
 	if (git_buf_grow_by(buf, total_size) < 0)
 		return -1;
 
@@ -740,7 +759,8 @@ int git_buf_join(
 	ssize_t offset_a = -1;
 
 	/* not safe to have str_b point internally to the buffer */
-	assert(str_b < buf->ptr || str_b >= buf->ptr + buf->size);
+	if (buf->size)
+		assert(str_b < buf->ptr || str_b >= buf->ptr + buf->size);
 
 	/* figure out if we need to insert a separator */
 	if (separator && strlen_a) {
@@ -750,12 +770,12 @@ int git_buf_join(
 	}
 
 	/* str_a could be part of the buffer */
-	if (str_a >= buf->ptr && str_a < buf->ptr + buf->size)
+	if (buf->size && str_a >= buf->ptr && str_a < buf->ptr + buf->size)
 		offset_a = str_a - buf->ptr;
 
-	GITERR_CHECK_ALLOC_ADD(&alloc_len, strlen_a, strlen_b);
-	GITERR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, need_sep);
-	GITERR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_len, strlen_a, strlen_b);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, need_sep);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, 1);
 	ENSURE_SIZE(buf, alloc_len);
 
 	/* fix up internal pointers */
@@ -805,11 +825,11 @@ int git_buf_join3(
 			sep_b = (str_b[len_b - 1] != separator);
 	}
 
-	GITERR_CHECK_ALLOC_ADD(&len_total, len_a, sep_a);
-	GITERR_CHECK_ALLOC_ADD(&len_total, len_total, len_b);
-	GITERR_CHECK_ALLOC_ADD(&len_total, len_total, sep_b);
-	GITERR_CHECK_ALLOC_ADD(&len_total, len_total, len_c);
-	GITERR_CHECK_ALLOC_ADD(&len_total, len_total, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&len_total, len_a, sep_a);
+	GIT_ERROR_CHECK_ALLOC_ADD(&len_total, len_total, len_b);
+	GIT_ERROR_CHECK_ALLOC_ADD(&len_total, len_total, sep_b);
+	GIT_ERROR_CHECK_ALLOC_ADD(&len_total, len_total, len_c);
+	GIT_ERROR_CHECK_ALLOC_ADD(&len_total, len_total, 1);
 	ENSURE_SIZE(buf, len_total);
 
 	tgt = buf->ptr;
@@ -872,8 +892,8 @@ int git_buf_splice(
 	/* Ported from git.git
 	 * https://github.com/git/git/blob/16eed7c/strbuf.c#L159-176
 	 */
-	GITERR_CHECK_ALLOC_ADD(&new_size, (buf->size - nb_to_remove), nb_to_insert);
-	GITERR_CHECK_ALLOC_ADD(&alloc_size, new_size, 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&new_size, (buf->size - nb_to_remove), nb_to_insert);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_size, new_size, 1);
 	ENSURE_SIZE(buf, alloc_size);
 
 	memmove(splice_loc + nb_to_insert,
@@ -949,7 +969,7 @@ int git_buf_quote(git_buf *buf)
 	git_buf_swap(&quoted, buf);
 
 done:
-	git_buf_free(&quoted);
+	git_buf_dispose(&quoted);
 	return error;
 }
 
@@ -990,14 +1010,14 @@ int git_buf_unquote(git_buf *buf)
 			/* \xyz digits convert to the char*/
 			case '0': case '1': case '2': case '3':
 				if (j == buf->size-3) {
-					giterr_set(GITERR_INVALID,
+					git_error_set(GIT_ERROR_INVALID,
 						"truncated quoted character \\%c", ch);
 					return -1;
 				}
 
 				if (buf->ptr[j+1] < '0' || buf->ptr[j+1] > '7' ||
 					buf->ptr[j+2] < '0' || buf->ptr[j+2] > '7') {
-					giterr_set(GITERR_INVALID,
+					git_error_set(GIT_ERROR_INVALID,
 						"truncated quoted character \\%c%c%c",
 						buf->ptr[j], buf->ptr[j+1], buf->ptr[j+2]);
 					return -1;
@@ -1010,7 +1030,7 @@ int git_buf_unquote(git_buf *buf)
 				break;
 
 			default:
-				giterr_set(GITERR_INVALID, "invalid quoted character \\%c", ch);
+				git_error_set(GIT_ERROR_INVALID, "invalid quoted character \\%c", ch);
 				return -1;
 			}
 		}
@@ -1024,6 +1044,6 @@ int git_buf_unquote(git_buf *buf)
 	return 0;
 
 invalid:
-	giterr_set(GITERR_INVALID, "invalid quoted line");
+	git_error_set(GIT_ERROR_INVALID, "invalid quoted line");
 	return -1;
 }

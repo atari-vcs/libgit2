@@ -28,11 +28,11 @@ int p_getaddrinfo(
 
 	GIT_UNUSED(hints);
 
-	if ((ainfo = malloc(sizeof(struct addrinfo))) == NULL)
+	if ((ainfo = git__malloc(sizeof(struct addrinfo))) == NULL)
 		return -1;
 
 	if ((ainfo->ai_hostent = gethostbyname(host)) == NULL) {
-		free(ainfo);
+		git__free(ainfo);
 		return -2;
 	}
 
@@ -65,7 +65,7 @@ int p_getaddrinfo(
 	ai = ainfo;
 
 	for (p = 1; ainfo->ai_hostent->h_addr_list[p] != NULL; p++) {
-		if (!(ai->ai_next = malloc(sizeof(struct addrinfo)))) {
+		if (!(ai->ai_next = git__malloc(sizeof(struct addrinfo)))) {
 			p_freeaddrinfo(ainfo);
 			return -1;
 		}
@@ -89,7 +89,7 @@ void p_freeaddrinfo(struct addrinfo *info)
 
 	while(p != NULL) {
 		next = p->ai_next;
-		free(p);
+		git__free(p);
 		p = next;
 	}
 }
@@ -235,7 +235,7 @@ int git__mmap_alignment(size_t *alignment)
 }
 
 
-int p_mmap(git_map *out, size_t len, int prot, int flags, int fd, git_off_t offset)
+int p_mmap(git_map *out, size_t len, int prot, int flags, int fd, off64_t offset)
 {
 	GIT_MMAP_VALIDATE(out, len, prot, flags);
 
@@ -243,17 +243,17 @@ int p_mmap(git_map *out, size_t len, int prot, int flags, int fd, git_off_t offs
 	out->len = 0;
 
 	if ((prot & GIT_PROT_WRITE) && ((flags & GIT_MAP_TYPE) == GIT_MAP_SHARED)) {
-		giterr_set(GITERR_OS, "trying to map shared-writeable");
+		git_error_set(GIT_ERROR_OS, "trying to map shared-writeable");
 		return -1;
 	}
 
-	out->data = malloc(len);
-	GITERR_CHECK_ALLOC(out->data);
+	out->data = git__malloc(len);
+	GIT_ERROR_CHECK_ALLOC(out->data);
 
 	if (!git__is_ssizet(len) ||
 		(p_lseek(fd, offset, SEEK_SET) < 0) ||
 		(p_read(fd, out->data, len) != (ssize_t)len)) {
-		giterr_set(GITERR_OS, "mmap emulation failed");
+		git_error_set(GIT_ERROR_OS, "mmap emulation failed");
 		return -1;
 	}
 
@@ -264,7 +264,7 @@ int p_mmap(git_map *out, size_t len, int prot, int flags, int fd, git_off_t offs
 int p_munmap(git_map *map)
 {
 	assert(map != NULL);
-	free(map->data);
+	git__free(map->data);
 
 	return 0;
 }

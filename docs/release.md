@@ -10,12 +10,13 @@ We aim to release once every six months. We start the process by opening an issu
     
     Let's release v0.X, codenamed: <something witty>
     
-    - [ ] Bump the versions in the headers
+    - [ ] Bump the versions in the headers (`include/git2/version.h`)
+    - [ ] Bump the versions in the clib manifest (`package.json`)
     - [ ] Make a release candidate
     - [ ] Plug any final leaks
     - [ ] Fix any last-minute issues
-    - [ ] Make sure CHANGELOG reflects everything worth discussing
-    - [ ] Update the version in CHANGELOG and the header
+    - [ ] Make sure changelog.md reflects everything worth discussing
+    - [ ] Update the version in changelog.md and the header
     - [ ] Produce a release candidate
     - [ ] Tag
     - [ ] Create maint/v0.X
@@ -25,12 +26,13 @@ We tag at least one release candidate. This RC must carry the new version in the
 
 Preparing the first release candidate includes updating the version number of libgit2 to the new version number. To do so, a pull request shall be submitted that adjusts the version number in the following places:
 
-- CHANGELOG.md
+- docs/changelog.md
 - include/git2/version.h
+- package.json
 
 As soon as the pull request is merged, the merge commit shall be tagged with a lightweight tag.
 
-The tagging happens via GitHub's "releases" tab which lets us attach release notes to a particular tag. In the description we include the changes in `CHANGELOG.md` between the last full release. Use the following as a base for the release notes
+The tagging happens via GitHub's "releases" tab which lets us attach release notes to a particular tag. In the description we include the changes in `docs/changelog.md` between the last full release. Use the following as a base for the release notes
 
     This is the first release of the v0.X series, <codename>. The changelog follows.
 
@@ -66,7 +68,7 @@ Here we do not use release candidates as the changes are supposed to be small an
 
 This is the same as a maintenance release, except that the fix itself will most likely be developed in a private repository and will only be visible to a select group of people until the release.
 
-Everything else remains the same. Occasionally we might opt to backport a security fix to the previous series, based on how recently we started the new series and how serious the issue is.
+We have committed to providing security fixes for the latest two released versions.  E.g. if the latest version is v0.28.x, then we will provide security fixes for both v0.28.x and v0.27.y.
 
 ## Updating documentation
 

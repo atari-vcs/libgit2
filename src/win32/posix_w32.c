@@ -8,7 +8,7 @@
 #include "common.h"
 
 #include "../posix.h"
-#include "../fileops.h"
+#include "../futils.h"
 #include "path.h"
 #include "path_w32.h"
 #include "utf-conv.h"
@@ -29,14 +29,19 @@
 #define IO_REPARSE_TAG_SYMLINK (0xA000000CL)
 #endif
 
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+# define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x02
+#endif
+
+#ifndef SYMBOLIC_LINK_FLAG_DIRECTORY
+# define SYMBOLIC_LINK_FLAG_DIRECTORY 0x01
+#endif
+
 /* Allowable mode bits on Win32.  Using mode bits that are not supported on
  * Win32 (eg S_IRWXU) is generally ignored, but Wine warns loudly about it
  * so we simply remove them.
  */
 #define WIN32_MODE_MASK (_S_IREAD | _S_IWRITE)
-
-/* GetFinalPathNameByHandleW signature */
-typedef DWORD(WINAPI *PFGetFinalPathNameByHandleW)(HANDLE, LPWSTR, DWORD, DWORD);
 
 unsigned long git_win32__createfile_sharemode =
  FILE_SHARE_READ | FILE_SHARE_WRITE;
@@ -205,7 +210,7 @@ on_error:
  * We now take a "git_off_t" rather than "long" because
  * files may be longer than 2Gb.
  */
-int p_ftruncate(int fd, git_off_t size)
+int p_ftruncate(int fd, off64_t size)
 {
 	if (size < 0) {
 		errno = EINVAL;
@@ -246,8 +251,24 @@ int p_link(const char *old, const char *new)
 
 GIT_INLINE(int) unlink_once(const wchar_t *path)
 {
+	DWORD error;
+
 	if (DeleteFileW(path))
 		return 0;
+
+	if ((error = GetLastError()) == ERROR_ACCESS_DENIED) {
+		WIN32_FILE_ATTRIBUTE_DATA fdata;
+		if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fdata) ||
+		    !(fdata.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+		    !(fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			goto out;
+
+		if (RemoveDirectoryW(path))
+			return 0;
+	}
+
+out:
+	SetLastError(error);
 
 	if (last_error_retryable())
 		return GIT_RETRY;
@@ -354,7 +375,7 @@ static int do_lstat(const char *path, struct stat *buf, bool posixly_correct)
 	if ((len = git_win32_path_from_utf8(path_w, path)) < 0)
 		return -1;
 
-	git_win32__path_trim_end(path_w, len);
+	git_win32_path_trim_end(path_w, len);
 
 	return lstat_w(path_w, buf, posixly_correct);
 }
@@ -393,12 +414,50 @@ int p_readlink(const char *path, char *buf, size_t bufsiz)
 	return (int)bufsiz;
 }
 
-int p_symlink(const char *old, const char *new)
+static bool target_is_dir(const char *target, const char *path)
 {
-	/* Real symlinks on NTFS require admin privileges. Until this changes,
-	 * libgit2 just creates a text file with the link target in the contents.
+	git_buf resolved = GIT_BUF_INIT;
+	git_win32_path resolved_w;
+	bool isdir = true;
+
+	if (git_path_is_absolute(target))
+		git_win32_path_from_utf8(resolved_w, target);
+	else if (git_path_dirname_r(&resolved, path) < 0 ||
+		 git_path_apply_relative(&resolved, target) < 0 ||
+		 git_win32_path_from_utf8(resolved_w, resolved.ptr) < 0)
+		goto out;
+
+	isdir = GetFileAttributesW(resolved_w) & FILE_ATTRIBUTE_DIRECTORY;
+
+out:
+	git_buf_dispose(&resolved);
+	return isdir;
+}
+
+int p_symlink(const char *target, const char *path)
+{
+	git_win32_path target_w, path_w;
+	DWORD dwFlags;
+
+	/*
+	 * Convert both target and path to Windows-style paths. Note that we do
+	 * not want to use `git_win32_path_from_utf8` for converting the target,
+	 * as that function will automatically pre-pend the current working
+	 * directory in case the path is not absolute. As Git will instead use
+	 * relative symlinks, this is not someting we want.
 	 */
-	return git_futils_fake_symlink(old, new);
+	if (git_win32_path_from_utf8(path_w, path) < 0 ||
+	    git_win32_path_relative_from_utf8(target_w, target) < 0)
+		return -1;
+
+	dwFlags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+	if (target_is_dir(target, path))
+		dwFlags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+
+	if (!CreateSymbolicLinkW(path_w, target_w, dwFlags))
+		return -1;
+
+	return 0;
 }
 
 struct open_opts {
@@ -524,7 +583,7 @@ int p_utimes(const char *path, const struct p_timeval times[2])
 		attrs_new = attrs_orig & ~FILE_ATTRIBUTE_READONLY;
 
 		if (!SetFileAttributesW(wpath, attrs_new)) {
-			giterr_set(GITERR_OS, "failed to set attributes");
+			git_error_set(GIT_ERROR_OS, "failed to set attributes");
 			return -1;
 		}
 	}
@@ -598,39 +657,12 @@ int p_getcwd(char *buffer_out, size_t size)
 	return 0;
 }
 
-/*
- * Returns the address of the GetFinalPathNameByHandleW function.
- * This function is available on Windows Vista and higher.
- */
-static PFGetFinalPathNameByHandleW get_fpnbyhandle(void)
-{
-	static PFGetFinalPathNameByHandleW pFunc = NULL;
-	PFGetFinalPathNameByHandleW toReturn = pFunc;
-
-	if (!toReturn) {
-		HMODULE hModule = GetModuleHandleW(L"kernel32");
-
-		if (hModule)
-			toReturn = (PFGetFinalPathNameByHandleW)GetProcAddress(hModule, "GetFinalPathNameByHandleW");
-
-		pFunc = toReturn;
-	}
-
-	assert(toReturn);
-
-	return toReturn;
-}
-
 static int getfinalpath_w(
 	git_win32_path dest,
 	const wchar_t *path)
 {
-	PFGetFinalPathNameByHandleW pgfp = get_fpnbyhandle();
 	HANDLE hFile;
 	DWORD dwChars;
-
-	if (!pgfp)
-		return -1;
 
 	/* Use FILE_FLAG_BACKUP_SEMANTICS so we can open a directory. Do not
 	* specify FILE_FLAG_OPEN_REPARSE_POINT; we want to open a handle to the
@@ -642,14 +674,14 @@ static int getfinalpath_w(
 		return -1;
 
 	/* Call GetFinalPathNameByHandle */
-	dwChars = pgfp(hFile, dest, GIT_WIN_PATH_UTF16, FILE_NAME_NORMALIZED);
+	dwChars = GetFinalPathNameByHandleW(hFile, dest, GIT_WIN_PATH_UTF16, FILE_NAME_NORMALIZED);
 	CloseHandle(hFile);
 
 	if (!dwChars || dwChars >= GIT_WIN_PATH_UTF16)
 		return -1;
 
-	/* The path may be delivered to us with a prefix; canonicalize */
-	return (int)git_win32__canonicalize_path(dest, dwChars);
+	/* The path may be delivered to us with a namespace prefix; remove */
+	return (int)git_win32_path_remove_namespace(dest, dwChars);
 }
 
 static int follow_and_lstat_link(git_win32_path path, struct stat* buf)
@@ -832,7 +864,7 @@ int p_mkstemp(char *tmp_path)
 		return -1;
 #endif
 
-	return p_open(tmp_path, O_RDWR | O_CREAT | O_EXCL, 0744); //-V536
+	return p_open(tmp_path, O_RDWR | O_CREAT | O_EXCL, 0744); /* -V536 */
 }
 
 int p_access(const char* path, mode_t mode)
@@ -871,7 +903,7 @@ int p_rename(const char *from, const char *to)
 int p_recv(GIT_SOCKET socket, void *buffer, size_t length, int flags)
 {
 	if ((size_t)((int)length) != length)
-		return -1; /* giterr_set will be done by caller */
+		return -1; /* git_error_set will be done by caller */
 
 	return recv(socket, buffer, (int)length, flags);
 }
@@ -879,7 +911,7 @@ int p_recv(GIT_SOCKET socket, void *buffer, size_t length, int flags)
 int p_send(GIT_SOCKET socket, const void *buffer, size_t length, int flags)
 {
 	if ((size_t)((int)length) != length)
-		return -1; /* giterr_set will be done by caller */
+		return -1; /* git_error_set will be done by caller */
 
 	return send(socket, buffer, (int)length, flags);
 }
