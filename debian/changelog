@@ -1,3 +1,13 @@
+libgit2 (0.27.7+dfsg.1-0.2co2) apertis; urgency=medium
+
+  [ Emanuele Aina ]
+  * Add dependency on ca-certificates to fix build on OBS
+
+  [ Ritesh Raj Sarraf ]
+  * debian/apertis/component: Set to development
+
+ -- Emanuele Aina <emanuele.aina@collabora.com>  Sun, 28 Feb 2021 07:59:53 +0000
+
 libgit2 (0.27.7+dfsg.1-0.2co1) apertis; urgency=medium
 
   * Fix TLS connections by explicitly setting CERT_LOCATION
