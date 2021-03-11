@@ -11,21 +11,31 @@
 # include <openssl/err.h>
 #endif
 
+#ifdef GIT_MBEDTLS
+# include <mbedtls/error.h>
+#endif
+
 #include <git2.h>
+#include "alloc.h"
 #include "sysdir.h"
 #include "cache.h"
 #include "global.h"
 #include "object.h"
 #include "odb.h"
 #include "refs.h"
+#include "index.h"
 #include "transports/smart.h"
+#include "transports/http.h"
 #include "streams/openssl.h"
+#include "streams/mbedtls.h"
 
-void git_libgit2_version(int *major, int *minor, int *rev)
+int git_libgit2_version(int *major, int *minor, int *rev)
 {
 	*major = LIBGIT2_VER_MAJOR;
 	*minor = LIBGIT2_VER_MINOR;
 	*rev = LIBGIT2_VER_REVISION;
+
+	return 0;
 }
 
 int git_libgit2_features(void)
@@ -49,6 +59,9 @@ int git_libgit2_features(void)
 /* Declarations for tuneable settings */
 extern size_t git_mwindow__window_size;
 extern size_t git_mwindow__mapped_limit;
+extern size_t git_mwindow__file_limit;
+extern size_t git_indexer__max_objects;
+extern bool git_disable_pack_keep_file_checks;
 
 static int config_level_to_sysdir(int config_level)
 {
@@ -68,8 +81,8 @@ static int config_level_to_sysdir(int config_level)
 		val = GIT_SYSDIR_PROGRAMDATA;
 		break;
 	default:
-		giterr_set(
-			GITERR_INVALID, "invalid config path selector %d", config_level);
+		git_error_set(
+			GIT_ERROR_INVALID, "invalid config path selector %d", config_level);
 	}
 
 	return val;
@@ -112,6 +125,14 @@ int git_libgit2_opts(int key, ...)
 		*(va_arg(ap, size_t *)) = git_mwindow__mapped_limit;
 		break;
 
+	case GIT_OPT_SET_MWINDOW_FILE_LIMIT:
+		git_mwindow__file_limit = va_arg(ap, size_t);
+		break;
+
+	case GIT_OPT_GET_MWINDOW_FILE_LIMIT:
+		*(va_arg(ap, size_t *)) = git_mwindow__file_limit;
+		break;
+
 	case GIT_OPT_GET_SEARCH_PATH:
 		if ((error = config_level_to_sysdir(va_arg(ap, int))) >= 0) {
 			git_buf *out = va_arg(ap, git_buf *);
@@ -132,7 +153,7 @@ int git_libgit2_opts(int key, ...)
 
 	case GIT_OPT_SET_CACHE_OBJECT_LIMIT:
 		{
-			git_otype type = (git_otype)va_arg(ap, int);
+			git_object_t type = (git_object_t)va_arg(ap, int);
 			size_t size = va_arg(ap, size_t);
 			error = git_cache_set_max_object_size(type, size);
 			break;
@@ -175,8 +196,17 @@ int git_libgit2_opts(int key, ...)
 			const char *path = va_arg(ap, const char *);
 			error = git_openssl__set_cert_location(file, path);
 		}
+#elif defined(GIT_MBEDTLS)
+		{
+			const char *file = va_arg(ap, const char *);
+			const char *path = va_arg(ap, const char *);
+			if (file)
+				error = git_mbedtls__set_cert_location(file, 0);
+			if (error && path)
+				error = git_mbedtls__set_cert_location(path, 1);
+		}
 #else
-		giterr_set(GITERR_SSL, "TLS backend doesn't support certificate locations");
+		git_error_set(GIT_ERROR_SSL, "TLS backend doesn't support certificate locations");
 		error = -1;
 #endif
 		break;
@@ -184,7 +214,7 @@ int git_libgit2_opts(int key, ...)
 		git__free(git__user_agent);
 		git__user_agent = git__strdup(va_arg(ap, const char *));
 		if (!git__user_agent) {
-			giterr_set_oom();
+			git_error_set_oom();
 			error = -1;
 		}
 
@@ -199,17 +229,17 @@ int git_libgit2_opts(int key, ...)
 		break;
 
 	case GIT_OPT_SET_SSL_CIPHERS:
-#ifdef GIT_OPENSSL
+#if (GIT_OPENSSL || GIT_MBEDTLS)
 		{
 			git__free(git__ssl_ciphers);
 			git__ssl_ciphers = git__strdup(va_arg(ap, const char *));
 			if (!git__ssl_ciphers) {
-				giterr_set_oom();
+				git_error_set_oom();
 				error = -1;
 			}
 		}
 #else
-		giterr_set(GITERR_SSL, "TLS backend doesn't support custom ciphers");
+		git_error_set(GIT_ERROR_SSL, "TLS backend doesn't support custom ciphers");
 		error = -1;
 #endif
 		break;
@@ -246,8 +276,32 @@ int git_libgit2_opts(int key, ...)
 		git_odb__strict_hash_verification = (va_arg(ap, int) != 0);
 		break;
 
+	case GIT_OPT_SET_ALLOCATOR:
+		error = git_allocator_setup(va_arg(ap, git_allocator *));
+		break;
+
+	case GIT_OPT_ENABLE_UNSAVED_INDEX_SAFETY:
+		git_index__enforce_unsaved_safety = (va_arg(ap, int) != 0);
+		break;
+
+	case GIT_OPT_SET_PACK_MAX_OBJECTS:
+		git_indexer__max_objects = va_arg(ap, size_t);
+		break;
+
+	case GIT_OPT_GET_PACK_MAX_OBJECTS:
+		*(va_arg(ap, size_t *)) = git_indexer__max_objects;
+		break;
+
+	case GIT_OPT_DISABLE_PACK_KEEP_FILE_CHECKS:
+		git_disable_pack_keep_file_checks = (va_arg(ap, int) != 0);
+		break;
+
+	case GIT_OPT_ENABLE_HTTP_EXPECT_CONTINUE:
+		git_http__expect_continue = (va_arg(ap, int) != 0);
+		break;
+
 	default:
-		giterr_set(GITERR_INVALID, "invalid option key");
+		git_error_set(GIT_ERROR_INVALID, "invalid option key");
 		error = -1;
 	}
 
@@ -255,4 +309,3 @@ int git_libgit2_opts(int key, ...)
 
 	return error;
 }
-

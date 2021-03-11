@@ -14,7 +14,7 @@
 #include "diff.h"
 #include "diff_generate.h"
 #include "path.h"
-#include "fileops.h"
+#include "futils.h"
 #include "config.h"
 
 git_diff_delta *git_diff__delta_dup(
@@ -131,15 +131,14 @@ int git_diff__merge(
 
 	if (ignore_case != ((from->opts.flags & GIT_DIFF_IGNORE_CASE) != 0) ||
 		reversed    != ((from->opts.flags & GIT_DIFF_REVERSE) != 0)) {
-		giterr_set(GITERR_INVALID,
+		git_error_set(GIT_ERROR_INVALID,
 			"attempt to merge diffs created with conflicting options");
 		return -1;
 	}
 
-	if (git_vector_init(&onto_new, onto->deltas.length, git_diff_delta__cmp) < 0)
+	if (git_vector_init(&onto_new, onto->deltas.length, git_diff_delta__cmp) < 0 ||
+	    git_pool_init(&onto_pool, 1) < 0)
 		return -1;
-
-	git_pool_init(&onto_pool, 1);
 
 	for (i = 0, j = 0; i < onto->deltas.length || j < from->deltas.length; ) {
 		git_diff_delta *o = GIT_VECTOR_GET(&onto->deltas, i);
@@ -251,7 +250,7 @@ static int normalize_find_opts(
 	git_config *cfg = NULL;
 	git_hashsig_option_t hashsig_opts;
 
-	GITERR_CHECK_VERSION(given, GIT_DIFF_FIND_OPTIONS_VERSION, "git_diff_find_options");
+	GIT_ERROR_CHECK_VERSION(given, GIT_DIFF_FIND_OPTIONS_VERSION, "git_diff_find_options");
 
 	if (diff->repo != NULL &&
 		git_repository_config__weakptr(&cfg, diff->repo) < 0)
@@ -332,7 +331,7 @@ static int normalize_find_opts(
 	/* assign the internal metric with whitespace flag as payload */
 	if (!opts->metric) {
 		opts->metric = git__malloc(sizeof(git_diff_similarity_metric));
-		GITERR_CHECK_ALLOC(opts->metric);
+		GIT_ERROR_CHECK_ALLOC(opts->metric);
 
 		opts->metric->file_signature = git_diff_find_similar__hashsig_for_file;
 		opts->metric->buffer_signature = git_diff_find_similar__hashsig_for_buf;
@@ -357,7 +356,7 @@ static int insert_delete_side_of_split(
 {
 	/* make new record for DELETED side of split */
 	git_diff_delta *deleted = git_diff__delta_dup(delta, &diff->pool);
-	GITERR_CHECK_ALLOC(deleted);
+	GIT_ERROR_CHECK_ALLOC(deleted);
 
 	deleted->status = GIT_DELTA_DELETED;
 	deleted->nfiles = 1;
@@ -389,7 +388,7 @@ static int apply_splits_and_deletes(
 			if (insert_delete_side_of_split(diff, &onto, delta) < 0)
 				goto on_error;
 
-			if (diff->new_src == GIT_ITERATOR_TYPE_WORKDIR)
+			if (diff->new_src == GIT_ITERATOR_WORKDIR)
 				delta->status = GIT_DELTA_UNTRACKED;
 			else
 				delta->status = GIT_DELTA_ADDED;
@@ -441,7 +440,7 @@ GIT_INLINE(git_diff_file *) similarity_get_file(git_diff *diff, size_t idx)
 
 typedef struct {
 	size_t idx;
-	git_iterator_type_t src;
+	git_iterator_t src;
 	git_repository *repo;
 	git_diff_file *file;
 	git_buf data;
@@ -460,7 +459,7 @@ static int similarity_init(
 	info->blob = NULL;
 	git_buf_init(&info->data, 0);
 
-	if (info->file->size > 0 || info->src == GIT_ITERATOR_TYPE_WORKDIR)
+	if (info->file->size > 0 || info->src == GIT_ITERATOR_WORKDIR)
 		return 0;
 
 	return git_diff_file__resolve_zero_size(
@@ -475,7 +474,7 @@ static int similarity_sig(
 	int error = 0;
 	git_diff_file *file = info->file;
 
-	if (info->src == GIT_ITERATOR_TYPE_WORKDIR) {
+	if (info->src == GIT_ITERATOR_WORKDIR) {
 		if ((error = git_buf_joinpath(
 			&info->data, git_repository_workdir(info->repo), file->path)) < 0)
 			return error;
@@ -496,13 +495,13 @@ static int similarity_sig(
 		if (info->odb_obj != NULL)
 			error = git_object__from_odb_object(
 				(git_object **)&info->blob, info->repo,
-				info->odb_obj, GIT_OBJ_BLOB);
+				info->odb_obj, GIT_OBJECT_BLOB);
 		else
 			error = git_blob_lookup(&info->blob, info->repo, &file->id);
 
 		if (error < 0) {
 			/* if lookup fails, just skip this item in similarity calc */
-			giterr_clear();
+			git_error_clear();
 		} else {
 			size_t sz;
 
@@ -510,7 +509,7 @@ static int similarity_sig(
 			if (file->size != git_blob_rawsize(info->blob))
 				file->size = git_blob_rawsize(info->blob);
 
-			sz = (size_t)(git__is_sizet(file->size) ? file->size : -1);
+			sz = git__is_sizet(file->size) ? (size_t)file->size : (size_t)-1;
 
 			error = opts->metric->buffer_signature(
 				&cache[info->idx], info->file,
@@ -529,7 +528,7 @@ static void similarity_unload(similarity_info *info)
 	if (info->blob)
 		git_blob_free(info->blob);
 	else
-		git_buf_free(&info->data);
+		git_buf_dispose(&info->data);
 }
 
 #define FLAG_SET(opts,flag_name) (((opts)->flags & flag_name) != 0)
@@ -560,14 +559,14 @@ static int similarity_measure(
 
 	/* if exact match is requested, force calculation of missing OIDs now */
 	if (exact_match) {
-		if (git_oid_iszero(&a_file->id) &&
-			diff->old_src == GIT_ITERATOR_TYPE_WORKDIR &&
+		if (git_oid_is_zero(&a_file->id) &&
+			diff->old_src == GIT_ITERATOR_WORKDIR &&
 			!git_diff__oid_for_file(&a_file->id,
 				diff, a_file->path, a_file->mode, a_file->size))
 			a_file->flags |= GIT_DIFF_FLAG_VALID_ID;
 
-		if (git_oid_iszero(&b_file->id) &&
-			diff->new_src == GIT_ITERATOR_TYPE_WORKDIR &&
+		if (git_oid_is_zero(&b_file->id) &&
+			diff->new_src == GIT_ITERATOR_WORKDIR &&
 			!git_diff__oid_for_file(&b_file->id,
 				diff, b_file->path, b_file->mode, b_file->size))
 			b_file->flags |= GIT_DIFF_FLAG_VALID_ID;
@@ -816,6 +815,8 @@ int git_diff_find_similar(
 	diff_find_match *best_match;
 	git_diff_file swap;
 
+	assert(diff);
+
 	if ((error = normalize_find_opts(diff, &opts, given_opts)) < 0)
 		return error;
 
@@ -829,9 +830,9 @@ int git_diff_find_similar(
 	if ((opts.flags & GIT_DIFF_FIND_ALL) == 0)
 		goto cleanup;
 
-	GITERR_CHECK_ALLOC_MULTIPLY(&sigcache_size, num_deltas, 2);
+	GIT_ERROR_CHECK_ALLOC_MULTIPLY(&sigcache_size, num_deltas, 2);
 	sigcache = git__calloc(sigcache_size, sizeof(void *));
-	GITERR_CHECK_ALLOC(sigcache);
+	GIT_ERROR_CHECK_ALLOC(sigcache);
 
 	/* Label rename sources and targets
 	 *
@@ -854,13 +855,13 @@ int git_diff_find_similar(
 		goto cleanup;
 
 	src2tgt = git__calloc(num_deltas, sizeof(diff_find_match));
-	GITERR_CHECK_ALLOC(src2tgt);
+	GIT_ERROR_CHECK_ALLOC(src2tgt);
 	tgt2src = git__calloc(num_deltas, sizeof(diff_find_match));
-	GITERR_CHECK_ALLOC(tgt2src);
+	GIT_ERROR_CHECK_ALLOC(tgt2src);
 
 	if (FLAG_SET(&opts, GIT_DIFF_FIND_COPIES)) {
 		tgt2src_copy = git__calloc(num_deltas, sizeof(diff_find_match));
-		GITERR_CHECK_ALLOC(tgt2src_copy);
+		GIT_ERROR_CHECK_ALLOC(tgt2src_copy);
 	}
 
 	/*
@@ -1011,7 +1012,7 @@ find_best_matches:
 
 				delta_make_rename(tgt, src, best_match->similarity);
 
-				src->status = (diff->new_src == GIT_ITERATOR_TYPE_WORKDIR) ?
+				src->status = (diff->new_src == GIT_ITERATOR_WORKDIR) ?
 					GIT_DELTA_UNTRACKED : GIT_DELTA_ADDED;
 				src->nfiles = 1;
 				memset(&src->old_file, 0, sizeof(src->old_file));

@@ -76,7 +76,7 @@ extern char *git_buf_detach(git_buf *buf);
 extern int git_buf_attach(git_buf *buf, char *ptr, size_t asize);
 
 /* Populates a `git_buf` where the contents are not "owned" by the
- * buffer, and calls to `git_buf_free` will not free the given buf.
+ * buffer, and calls to `git_buf_dispose` will not free the given buf.
  */
 extern void git_buf_attach_notowned(
 	git_buf *buf, const char *ptr, size_t size);
@@ -113,6 +113,7 @@ int git_buf_puts(git_buf *buf, const char *string);
 int git_buf_printf(git_buf *buf, const char *format, ...) GIT_FORMAT_PRINTF(2, 3);
 int git_buf_vprintf(git_buf *buf, const char *format, va_list ap);
 void git_buf_clear(git_buf *buf);
+void git_buf_consume_bytes(git_buf *buf, size_t len);
 void git_buf_consume(git_buf *buf, const char *end);
 void git_buf_truncate(git_buf *buf, size_t len);
 void git_buf_shorten(git_buf *buf, size_t amount);

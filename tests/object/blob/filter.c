@@ -19,7 +19,7 @@ static const char *g_crlf_raw[CRLF_NUM_TEST_OBJECTS] = {
 	"\xFE\xFF\x00T\x00h\x00i\x00s\x00!"
 };
 
-static git_off_t g_crlf_raw_len[CRLF_NUM_TEST_OBJECTS] = {
+static off64_t g_crlf_raw_len[CRLF_NUM_TEST_OBJECTS] = {
 	-1, -1, -1, -1, -1, 17, -1, -1, 12
 };
 
@@ -59,7 +59,7 @@ void test_object_blob_filter__initialize(void)
 		if (g_crlf_raw_len[i] < 0)
 			g_crlf_raw_len[i] = strlen(g_crlf_raw[i]);
 
-		cl_git_pass(git_blob_create_frombuffer(
+		cl_git_pass(git_blob_create_from_buffer(
 			&g_crlf_oids[i], g_repo, g_crlf_raw[i], (size_t)g_crlf_raw_len[i]));
 	}
 }
@@ -103,7 +103,7 @@ void test_object_blob_filter__stats(void)
 		git_blob_free(blob);
 	}
 
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 }
 
 void test_object_blob_filter__to_odb(void)
@@ -139,12 +139,12 @@ void test_object_blob_filter__to_odb(void)
 		cl_assert_equal_sz(g_crlf_filtered[i].size, zeroed.size);
 		cl_assert_equal_i(
 			0, memcmp(zeroed.ptr, g_crlf_filtered[i].ptr, zeroed.size));
-		git_buf_free(&zeroed);
+		git_buf_dispose(&zeroed);
 
 		git_blob_free(blob);
 	}
 
 	git_filter_list_free(fl);
-	git_buf_free(&out);
+	git_buf_dispose(&out);
 	git_config_free(cfg);
 }

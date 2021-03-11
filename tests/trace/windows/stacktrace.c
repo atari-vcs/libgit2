@@ -1,5 +1,6 @@
 #include "clar_libgit2.h"
 #include "win32/w32_stack.h"
+#include "win32/w32_crtdbg_stacktrace.h"
 
 #if defined(GIT_MSVC_CRTDBG)
 static void a(void)
@@ -131,7 +132,7 @@ static void aux_cb_alloc__1(unsigned int *aux_id)
 	*aux_id = aux_counter++;
 }
 
-static void aux_cb_lookup__1(unsigned int aux_id, char *aux_msg, unsigned int aux_msg_len)
+static void aux_cb_lookup__1(unsigned int aux_id, char *aux_msg, size_t aux_msg_len)
 {
 	p_snprintf(aux_msg, aux_msg_len, "\tQQ%08x\n", aux_id);
 }

@@ -10,15 +10,15 @@
 
 #include "common.h"
 
-#include <zlib.h>
-
 #include "git2/oid.h"
 
+#include "array.h"
 #include "map.h"
 #include "mwindow.h"
 #include "odb.h"
+#include "offmap.h"
 #include "oidmap.h"
-#include "array.h"
+#include "zstream.h"
 
 #define GIT_PACK_FILE_MODE 0444
 
@@ -63,16 +63,13 @@ typedef struct git_pack_cache_entry {
 } git_pack_cache_entry;
 
 struct pack_chain_elem {
-	git_off_t base_key;
-	git_off_t offset;
+	off64_t base_key;
+	off64_t offset;
 	size_t size;
-	git_otype type;
+	git_object_t type;
 };
 
 typedef git_array_t(struct pack_chain_elem) git_dependency_chain;
-
-#include "offmap.h"
-#include "oidmap.h"
 
 #define GIT_PACK_CACHE_MEMORY_LIMIT 16 * 1024 * 1024
 #define GIT_PACK_CACHE_SIZE_LIMIT 1024 * 1024 /* don't bother caching anything over 1MB */
@@ -109,46 +106,63 @@ struct git_pack_file {
 	char pack_name[GIT_FLEX_ARRAY]; /* more */
 };
 
+/**
+ * Return the position where an OID (or a prefix) would be inserted within the
+ * OID Lookup Table of an .idx file. This performs binary search between the lo
+ * and hi indices.
+ *
+ * The stride parameter is provided because .idx files version 1 store the OIDs
+ * interleaved with the 4-byte file offsets of the objects within the .pack
+ * file (stride = 24), whereas files with version 2 store them in a contiguous
+ * flat array (stride = 20).
+ */
+int git_pack__lookup_sha1(const void *oid_lookup_table, size_t stride, unsigned lo,
+		unsigned hi, const unsigned char *oid_prefix);
+
 struct git_pack_entry {
-	git_off_t offset;
+	off64_t offset;
 	git_oid sha1;
 	struct git_pack_file *p;
 };
 
 typedef struct git_packfile_stream {
-	git_off_t curpos;
+	off64_t curpos;
 	int done;
-	z_stream zstream;
+	git_zstream zstream;
 	struct git_pack_file *p;
 	git_mwindow *mw;
 } git_packfile_stream;
 
-size_t git_packfile__object_header(unsigned char *hdr, size_t size, git_otype type);
+size_t git_packfile__object_header(unsigned char *hdr, size_t size, git_object_t type);
 
 int git_packfile__name(char **out, const char *path);
 
 int git_packfile_unpack_header(
 		size_t *size_p,
-		git_otype *type_p,
+		git_object_t *type_p,
 		git_mwindow_file *mwf,
 		git_mwindow **w_curs,
-		git_off_t *curpos);
+		off64_t *curpos);
 
 int git_packfile_resolve_header(
 		size_t *size_p,
-		git_otype *type_p,
+		git_object_t *type_p,
 		struct git_pack_file *p,
-		git_off_t offset);
+		off64_t offset);
 
-int git_packfile_unpack(git_rawobj *obj, struct git_pack_file *p, git_off_t *obj_offset);
+int git_packfile_unpack(git_rawobj *obj, struct git_pack_file *p, off64_t *obj_offset);
 
-int git_packfile_stream_open(git_packfile_stream *obj, struct git_pack_file *p, git_off_t curpos);
+int git_packfile_stream_open(git_packfile_stream *obj, struct git_pack_file *p, off64_t curpos);
 ssize_t git_packfile_stream_read(git_packfile_stream *obj, void *buffer, size_t len);
-void git_packfile_stream_free(git_packfile_stream *obj);
+void git_packfile_stream_dispose(git_packfile_stream *obj);
 
-git_off_t get_delta_base(struct git_pack_file *p, git_mwindow **w_curs,
-		git_off_t *curpos, git_otype type,
-		git_off_t delta_obj_offset);
+int get_delta_base(
+		off64_t *delta_base_out,
+		struct git_pack_file *p,
+		git_mwindow **w_curs,
+		off64_t *curpos,
+		git_object_t type,
+		off64_t delta_obj_offset);
 
 void git_packfile_close(struct git_pack_file *p, bool unlink_packfile);
 void git_packfile_free(struct git_pack_file *p);
