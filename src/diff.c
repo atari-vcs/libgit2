@@ -32,11 +32,6 @@ GIT_INLINE(const char *) diff_delta__path(const git_diff_delta *delta)
 	return str;
 }
 
-const char *git_diff_delta__path(const git_diff_delta *delta)
-{
-	return diff_delta__path(delta);
-}
-
 int git_diff_delta__cmp(const void *a, const void *b)
 {
 	const git_diff_delta *da = a, *db = b;
@@ -114,7 +109,7 @@ int git_diff_is_sorted_icase(const git_diff *diff)
 int git_diff_get_perfdata(git_diff_perfdata *out, const git_diff *diff)
 {
 	assert(out);
-	GITERR_CHECK_VERSION(out, GIT_DIFF_PERFDATA_VERSION, "git_diff_perfdata");
+	GIT_ERROR_CHECK_VERSION(out, GIT_DIFF_PERFDATA_VERSION, "git_diff_perfdata");
 	out->stat_calls = diff->perf.stat_calls;
 	out->oid_calculations = diff->perf.oid_calculations;
 	return 0;
@@ -155,7 +150,7 @@ int git_diff_foreach(
 	return error;
 }
 
-int git_diff_format_email__append_header_tobuf(
+static int diff_format_email_append_header_tobuf(
 	git_buf *out,
 	const git_oid *id,
 	const git_signature *author,
@@ -212,7 +207,7 @@ int git_diff_format_email__append_header_tobuf(
 	return error;
 }
 
-int git_diff_format_email__append_patches_tobuf(
+static int diff_format_email_append_patches_tobuf(
 	git_buf *out,
 	git_diff *diff)
 {
@@ -251,7 +246,7 @@ int git_diff_format_email(
 	assert(out && diff && opts);
 	assert(opts->summary && opts->id && opts->author);
 
-	GITERR_CHECK_VERSION(opts,
+	GIT_ERROR_CHECK_VERSION(opts,
 		GIT_DIFF_FORMAT_EMAIL_OPTIONS_VERSION,
 		"git_format_email_options");
 
@@ -260,14 +255,14 @@ int git_diff_format_email(
 
 	if (!ignore_marker) {
 		if (opts->patch_no > opts->total_patches) {
-			giterr_set(GITERR_INVALID,
+			git_error_set(GIT_ERROR_INVALID,
 				"patch %"PRIuZ" out of range. max %"PRIuZ,
 				opts->patch_no, opts->total_patches);
 			return -1;
 		}
 
 		if (opts->patch_no == 0) {
-			giterr_set(GITERR_INVALID,
+			git_error_set(GIT_ERROR_INVALID,
 				"invalid patch no %"PRIuZ". should be >0", opts->patch_no);
 			return -1;
 		}
@@ -280,19 +275,19 @@ int git_diff_format_email(
 		size_t offset = 0;
 
 		if ((offset = (loc - opts->summary)) == 0) {
-			giterr_set(GITERR_INVALID, "summary is empty");
+			git_error_set(GIT_ERROR_INVALID, "summary is empty");
 			error = -1;
 			goto on_error;
 		}
 
-		GITERR_CHECK_ALLOC_ADD(&allocsize, offset, 1);
+		GIT_ERROR_CHECK_ALLOC_ADD(&allocsize, offset, 1);
 		summary = git__calloc(allocsize, sizeof(char));
-		GITERR_CHECK_ALLOC(summary);
+		GIT_ERROR_CHECK_ALLOC(summary);
 
 		strncpy(summary, opts->summary, offset);
 	}
 
-	error = git_diff_format_email__append_header_tobuf(out,
+	error = diff_format_email_append_header_tobuf(out,
 		opts->id, opts->author, summary == NULL ? opts->summary : summary,
 		opts->body, opts->patch_no, opts->total_patches, ignore_marker);
 
@@ -305,7 +300,7 @@ int git_diff_format_email(
 		(error = git_diff_get_stats(&stats, diff)) < 0 ||
 		(error = git_diff_stats_to_buf(out, stats, format_flags, 0)) < 0 ||
 		(error = git_buf_putc(out, '\n')) < 0 ||
-		(error = git_diff_format_email__append_patches_tobuf(out, diff)) < 0)
+		(error = diff_format_email_append_patches_tobuf(out, diff)) < 0)
 			goto on_error;
 
 	error = git_buf_puts(out, "--\nlibgit2 " LIBGIT2_VERSION "\n\n");
@@ -323,7 +318,7 @@ int git_diff_commit_as_email(
 	git_commit *commit,
 	size_t patch_no,
 	size_t total_patches,
-	git_diff_format_email_flags_t flags,
+	uint32_t flags,
 	const git_diff_options *diff_opts)
 {
 	git_diff *diff = NULL;
@@ -350,14 +345,21 @@ int git_diff_commit_as_email(
 	return error;
 }
 
-int git_diff_init_options(git_diff_options *opts, unsigned int version)
+int git_diff_options_init(git_diff_options *opts, unsigned int version)
 {
 	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
 		opts, version, git_diff_options, GIT_DIFF_OPTIONS_INIT);
 	return 0;
 }
 
-int git_diff_find_init_options(
+#ifndef GIT_DEPRECATE_HARD
+int git_diff_init_options(git_diff_options *opts, unsigned int version)
+{
+	return git_diff_options_init(opts, version);
+}
+#endif
+
+int git_diff_find_options_init(
 	git_diff_find_options *opts, unsigned int version)
 {
 	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
@@ -365,7 +367,15 @@ int git_diff_find_init_options(
 	return 0;
 }
 
-int git_diff_format_email_init_options(
+#ifndef GIT_DEPRECATE_HARD
+int git_diff_find_init_options(
+	git_diff_find_options *opts, unsigned int version)
+{
+	return git_diff_find_options_init(opts, version);
+}
+#endif
+
+int git_diff_format_email_options_init(
 	git_diff_format_email_options *opts, unsigned int version)
 {
 	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
@@ -373,6 +383,14 @@ int git_diff_format_email_init_options(
 		GIT_DIFF_FORMAT_EMAIL_OPTIONS_INIT);
 	return 0;
 }
+
+#ifndef GIT_DEPRECATE_HARD
+int git_diff_format_email_init_options(
+	git_diff_format_email_options *opts, unsigned int version)
+{
+	return git_diff_format_email_options_init(opts, version);
+}
+#endif
 
 static int flush_hunk(git_oid *result, git_hash_ctx *ctx)
 {
@@ -386,7 +404,7 @@ static int flush_hunk(git_oid *result, git_hash_ctx *ctx)
 
 	for (i = 0; i < GIT_OID_RAWSZ; i++) {
 		carry += result->id[i] + hash.id[i];
-		result->id[i] = carry;
+		result->id[i] = (unsigned char)carry;
 		carry >>= 8;
 	}
 
@@ -409,41 +427,7 @@ static void strip_spaces(git_buf *buf)
 	git_buf_truncate(buf, len);
 }
 
-static int file_cb(
-	const git_diff_delta *delta,
-	float progress,
-	void *payload)
-{
-	struct patch_id_args *args = (struct patch_id_args *) payload;
-	git_buf buf = GIT_BUF_INIT;
-	int error;
-
-	GIT_UNUSED(progress);
-
-	if (!args->first_file &&
-	    (error = flush_hunk(&args->result, &args->ctx)) < 0)
-		goto out;
-	args->first_file = 0;
-
-	if ((error = git_buf_printf(&buf,
-				    "diff--gita/%sb/%s---a/%s+++b/%s",
-				    delta->old_file.path,
-				    delta->new_file.path,
-				    delta->old_file.path,
-				    delta->new_file.path)) < 0)
-		goto out;
-
-	strip_spaces(&buf);
-
-	if ((error = git_hash_update(&args->ctx, buf.ptr, buf.size)) < 0)
-		goto out;
-
-out:
-	git_buf_free(&buf);
-	return error;
-}
-
-static int line_cb(
+static int diff_patchid_print_callback_to_buf(
 	const git_diff_delta *delta,
 	const git_diff_hunk *hunk,
 	const git_diff_line *line,
@@ -451,37 +435,36 @@ static int line_cb(
 {
 	struct patch_id_args *args = (struct patch_id_args *) payload;
 	git_buf buf = GIT_BUF_INIT;
-	int error;
+	int error = 0;
 
-	GIT_UNUSED(delta);
-	GIT_UNUSED(hunk);
+	if (line->origin == GIT_DIFF_LINE_CONTEXT_EOFNL ||
+	    line->origin == GIT_DIFF_LINE_ADD_EOFNL ||
+	    line->origin == GIT_DIFF_LINE_DEL_EOFNL)
+		goto out;
 
-	switch (line->origin) {
-	    case GIT_DIFF_LINE_ADDITION:
-		git_buf_putc(&buf, '+');
-		break;
-	    case GIT_DIFF_LINE_DELETION:
-		git_buf_putc(&buf, '-');
-		break;
-	    case GIT_DIFF_LINE_CONTEXT:
-		break;
-	    default:
-		giterr_set(GITERR_PATCH, "invalid line origin for patch");
-		return -1;
-	}
+	if ((error = git_diff_print_callback__to_buf(delta, hunk,
+						     line, &buf)) < 0)
+		goto out;
 
-	git_buf_put(&buf, line->content, line->content_len);
 	strip_spaces(&buf);
+
+	if (line->origin == GIT_DIFF_LINE_FILE_HDR &&
+	    !args->first_file &&
+	    (error = flush_hunk(&args->result, &args->ctx) < 0))
+			goto out;
 
 	if ((error = git_hash_update(&args->ctx, buf.ptr, buf.size)) < 0)
 		goto out;
 
+	if (line->origin == GIT_DIFF_LINE_FILE_HDR && args->first_file)
+		args->first_file = 0;
+
 out:
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 	return error;
 }
 
-int git_diff_patchid_init_options(git_diff_patchid_options *opts, unsigned int version)
+int git_diff_patchid_options_init(git_diff_patchid_options *opts, unsigned int version)
 {
 	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
 		opts, version, git_diff_patchid_options, GIT_DIFF_PATCHID_OPTIONS_INIT);
@@ -493,7 +476,7 @@ int git_diff_patchid(git_oid *out, git_diff *diff, git_diff_patchid_options *opt
 	struct patch_id_args args;
 	int error;
 
-	GITERR_CHECK_VERSION(
+	GIT_ERROR_CHECK_VERSION(
 		opts, GIT_DIFF_PATCHID_OPTIONS_VERSION, "git_diff_patchid_options");
 
 	memset(&args, 0, sizeof(args));
@@ -501,7 +484,10 @@ int git_diff_patchid(git_oid *out, git_diff *diff, git_diff_patchid_options *opt
 	if ((error = git_hash_ctx_init(&args.ctx)) < 0)
 		goto out;
 
-	if ((error = git_diff_foreach(diff, file_cb, NULL, NULL, line_cb, &args)) < 0)
+	if ((error = git_diff_print(diff,
+				    GIT_DIFF_FORMAT_PATCH_ID,
+				    diff_patchid_print_callback_to_buf,
+				    &args)) < 0)
 		goto out;
 
 	if ((error = (flush_hunk(&args.result, &args.ctx))) < 0)

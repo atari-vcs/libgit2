@@ -13,13 +13,14 @@ License: BSD-2-clause
 
 Files: debian/*
 Copyright: 2011-2015, Russell Sim <russell.sim@gmail.com>
+           2020, Utkarsh Gupta <utkarsh@debian.org>
 License: GPL-2+
 
 Files: examples/*
 Copyright: Public Domain
 License: CC0-1.0
 
-Files: include/git2/inttypes.h include/git2/stdint.h
+Files: include/git2/stdint.h
 Copyright: 2006, Alexander Chemeris
 License: BSD-3-clause-modified
 
@@ -32,7 +33,7 @@ Copyright: 2010, Christopher Swenson
            2011, Vicent Marti
 License: MIT
 
-Files: src/path.c src/fnmatch.h
+Files: src/path.c
 Copyright: 2008, The Android Open Source Project
 License: BSD-2-clause
 
@@ -62,10 +63,6 @@ License: EDL-1.0
 Files: src/win32/posix_w32.c
 Copyright: 1999 - 2012, The PHP Group
 License: PHP-3.01
-
-Files: src/fnmatch.c
-Copyright: 1989, 1993, 1994, The Regents of the University of California.
-License: BSD-3-clause
 
 Files: tests/clar/*
 Copyright: 2011, Vicent Marti

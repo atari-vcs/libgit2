@@ -21,6 +21,21 @@ void test_utf8_to_utf16(const char *utf8_in, const wchar_t *utf16_expected)
 #endif
 }
 
+void test_utf8_to_utf16_relative(const char* utf8_in, const wchar_t* utf16_expected)
+{
+#ifdef GIT_WIN32
+	git_win32_path path_utf16;
+	int path_utf16len;
+
+	cl_assert((path_utf16len = git_win32_path_relative_from_utf8(path_utf16, utf8_in)) >= 0);
+	cl_assert_equal_wcs(utf16_expected, path_utf16);
+	cl_assert_equal_i(wcslen(utf16_expected), path_utf16len);
+#else
+	GIT_UNUSED(utf8_in);
+	GIT_UNUSED(utf16_expected);
+#endif
+}
+
 void test_path_win32__utf8_to_utf16(void)
 {
 #ifdef GIT_WIN32
@@ -129,9 +144,34 @@ void test_path_win32__absolute_from_relative(void)
 #endif
 }
 
-void test_canonicalize(const wchar_t *in, const wchar_t *expected)
+void test_path_win32__keeps_relative(void)
 {
 #ifdef GIT_WIN32
+	/* Relative paths stay relative */
+	test_utf8_to_utf16_relative("Foo", L"Foo");
+	test_utf8_to_utf16_relative("..\\..\\Foo", L"..\\..\\Foo");
+	test_utf8_to_utf16_relative("Foo\\..", L"Foo\\..");
+	test_utf8_to_utf16_relative("Foo\\..\\..", L"Foo\\..\\..");
+	test_utf8_to_utf16_relative("Foo\\Bar", L"Foo\\Bar");
+	test_utf8_to_utf16_relative("Foo\\..\\Bar", L"Foo\\..\\Bar");
+	test_utf8_to_utf16_relative("../../Foo", L"..\\..\\Foo");
+	test_utf8_to_utf16_relative("Foo/..", L"Foo\\..");
+	test_utf8_to_utf16_relative("Foo/../..", L"Foo\\..\\..");
+	test_utf8_to_utf16_relative("Foo/Bar", L"Foo\\Bar");
+	test_utf8_to_utf16_relative("Foo/../Bar", L"Foo\\..\\Bar");
+	test_utf8_to_utf16_relative("Foo/../Bar/", L"Foo\\..\\Bar\\");
+	test_utf8_to_utf16_relative("", L"");
+
+	/* Absolute paths are canonicalized */
+	test_utf8_to_utf16_relative("\\Foo", L"\\\\?\\C:\\Foo");
+	test_utf8_to_utf16_relative("/Foo/Bar/", L"\\\\?\\C:\\Foo\\Bar");
+	test_utf8_to_utf16_relative("\\\\server\\c$\\unc\\path", L"\\\\?\\UNC\\server\\c$\\unc\\path");
+#endif
+}
+
+#ifdef GIT_WIN32
+static void test_canonicalize(const wchar_t *in, const wchar_t *expected)
+{
 	git_win32_path canonical;
 
 	cl_assert(wcslen(in) < MAX_PATH);
@@ -139,10 +179,56 @@ void test_canonicalize(const wchar_t *in, const wchar_t *expected)
 
 	cl_must_pass(git_win32_path_canonicalize(canonical));
 	cl_assert_equal_wcs(expected, canonical);
+}
+#endif
+
+static void test_remove_namespace(const wchar_t *in, const wchar_t *expected)
+{
+#ifdef GIT_WIN32
+	git_win32_path canonical;
+
+	cl_assert(wcslen(in) < MAX_PATH);
+	wcscpy(canonical, in);
+
+	git_win32_path_remove_namespace(canonical, wcslen(in));
+	cl_assert_equal_wcs(expected, canonical);
 #else
 	GIT_UNUSED(in);
 	GIT_UNUSED(expected);
 #endif
+}
+
+void test_path_win32__remove_namespace(void)
+{
+	test_remove_namespace(L"\\\\?\\C:\\Temp\\Foo", L"C:\\Temp\\Foo");
+	test_remove_namespace(L"\\\\?\\C:\\", L"C:\\");
+	test_remove_namespace(L"\\\\?\\", L"");
+
+	test_remove_namespace(L"\\??\\C:\\Temp\\Foo", L"C:\\Temp\\Foo");
+	test_remove_namespace(L"\\??\\C:\\", L"C:\\");
+	test_remove_namespace(L"\\??\\", L"");
+
+	test_remove_namespace(L"\\\\?\\UNC\\server\\C$\\folder", L"\\\\server\\C$\\folder");
+	test_remove_namespace(L"\\\\?\\UNC\\server\\C$\\folder", L"\\\\server\\C$\\folder");
+	test_remove_namespace(L"\\\\?\\UNC\\server\\C$", L"\\\\server\\C$");
+	test_remove_namespace(L"\\\\?\\UNC\\server\\", L"\\\\server");
+	test_remove_namespace(L"\\\\?\\UNC\\server", L"\\\\server");
+
+	test_remove_namespace(L"\\??\\UNC\\server\\C$\\folder", L"\\\\server\\C$\\folder");
+	test_remove_namespace(L"\\??\\UNC\\server\\C$\\folder", L"\\\\server\\C$\\folder");
+	test_remove_namespace(L"\\??\\UNC\\server\\C$", L"\\\\server\\C$");
+	test_remove_namespace(L"\\??\\UNC\\server\\", L"\\\\server");
+	test_remove_namespace(L"\\??\\UNC\\server", L"\\\\server");
+
+	test_remove_namespace(L"\\\\server\\C$\\folder", L"\\\\server\\C$\\folder");
+	test_remove_namespace(L"\\\\server\\C$", L"\\\\server\\C$");
+	test_remove_namespace(L"\\\\server\\", L"\\\\server");
+	test_remove_namespace(L"\\\\server", L"\\\\server");
+
+	test_remove_namespace(L"C:\\Foo\\Bar", L"C:\\Foo\\Bar");
+	test_remove_namespace(L"C:\\", L"C:\\");
+	test_remove_namespace(L"", L"");
+
 }
 
 void test_path_win32__canonicalize(void)
@@ -156,16 +242,6 @@ void test_path_win32__canonicalize(void)
 	test_canonicalize(L"C:\\Foo\\..\\..\\..\\..\\", L"C:\\");
 	test_canonicalize(L"C:/Foo/Bar", L"C:\\Foo\\Bar");
 	test_canonicalize(L"C:/", L"C:\\");
-
-	test_canonicalize(L"Foo\\\\Bar\\\\Asdf\\\\", L"Foo\\Bar\\Asdf");
-	test_canonicalize(L"Foo\\\\Bar\\\\..\\\\Asdf\\", L"Foo\\Asdf");
-	test_canonicalize(L"Foo\\\\Bar\\\\.\\\\Asdf\\", L"Foo\\Bar\\Asdf");
-	test_canonicalize(L"Foo\\\\..\\Bar\\\\.\\\\Asdf\\", L"Bar\\Asdf");
-	test_canonicalize(L"\\", L"");
-	test_canonicalize(L"", L"");
-	test_canonicalize(L"Foo\\..\\..\\..\\..", L"");
-	test_canonicalize(L"..\\..\\..\\..", L"");
-	test_canonicalize(L"\\..\\..\\..\\..", L"");
 
 	test_canonicalize(L"\\\\?\\C:\\Foo\\Bar", L"\\\\?\\C:\\Foo\\Bar");
 	test_canonicalize(L"\\\\?\\C:\\Foo\\Bar\\", L"\\\\?\\C:\\Foo\\Bar");

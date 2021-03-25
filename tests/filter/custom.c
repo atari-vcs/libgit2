@@ -109,7 +109,7 @@ void test_filter_custom__to_odb(void)
 		0, memcmp(bitflipped_and_reversed_data, out.ptr, out.size));
 
 	git_filter_list_free(fl);
-	git_buf_free(&out);
+	git_buf_dispose(&out);
 }
 
 void test_filter_custom__to_workdir(void)
@@ -130,7 +130,7 @@ void test_filter_custom__to_workdir(void)
 		0, memcmp(workdir_data, out.ptr, out.size));
 
 	git_filter_list_free(fl);
-	git_buf_free(&out);
+	git_buf_dispose(&out);
 }
 
 void test_filter_custom__can_register_a_custom_filter_in_the_repository(void)
@@ -208,7 +208,7 @@ void test_filter_custom__order_dependency(void)
 		& git_index_get_bypath(index, "hero.1.rev-ident", 0)->id));
 	cl_assert_equal_s(
 		"\n!nuf evaH\n$dI$\ntset a si sihT", git_blob_rawcontent(blob));
-	cl_git_pass(git_blob_filtered_content(&buf, blob, "hero.1.rev-ident", 0));
+	cl_git_pass(git_blob_filter(&buf, blob, "hero.1.rev-ident", NULL));
 	/* no expansion because id was reversed at checkin and now at ident
 	 * time, reverse is not applied yet */
 	cl_assert_equal_s(
@@ -219,7 +219,7 @@ void test_filter_custom__order_dependency(void)
 		& git_index_get_bypath(index, "hero.2.rev-ident", 0)->id));
 	cl_assert_equal_s(
 		"\n!yzarC\n$Id$\ntset rehtonA", git_blob_rawcontent(blob));
-	cl_git_pass(git_blob_filtered_content(&buf, blob, "hero.2.rev-ident", 0));
+	cl_git_pass(git_blob_filter(&buf, blob, "hero.2.rev-ident", NULL));
 	/* expansion because reverse was applied at checkin and at ident time,
 	 * reverse is not applied yet */
 	cl_assert_equal_s(
@@ -228,7 +228,7 @@ void test_filter_custom__order_dependency(void)
 		git_blob_id(blob), "8ca0df630d728c0c72072b6101b301391ef10095"));
 	git_blob_free(blob);
 
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 }
 
 void test_filter_custom__filter_registry_failure_cases(void)
@@ -254,5 +254,5 @@ void test_filter_custom__erroneous_filter_fails(void)
 	cl_git_fail(git_filter_list_apply_to_data(&out, filters, &in));
 
 	git_filter_list_free(filters);
-	git_buf_free(&out);
+	git_buf_dispose(&out);
 }

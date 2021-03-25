@@ -11,7 +11,7 @@ static void test_make_relative(
 	git_buf_puts(&buf, path);
 	cl_assert_equal_i(expected_status, git_path_make_relative(&buf, parent));
 	cl_assert_equal_s(expected_path, buf.ptr);
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 }
 
 void test_path_core__make_relative(void)
@@ -319,7 +319,7 @@ static void test_join_unrooted(
 	cl_assert_equal_s(expected_result, result.ptr);
 	cl_assert_equal_i(expected_rootlen, root_at);
 
-	git_buf_free(&result);
+	git_buf_dispose(&result);
 }
 
 void test_path_core__join_unrooted(void)
@@ -343,6 +343,16 @@ void test_path_core__join_unrooted(void)
 	test_join_unrooted("c:/foo", 2, "c:/foo", "c:/asdf");
 	test_join_unrooted("c:/foo/bar", 2, "c:/foo/bar", "c:/asdf");
 
+#ifdef GIT_WIN32
+	/* Paths starting with '\\' are absolute */
+	test_join_unrooted("\\bar", 0, "\\bar", "c:/foo/");
+	test_join_unrooted("\\\\network\\bar", 9, "\\\\network\\bar", "c:/foo/");
+#else
+	/* Paths starting with '\\' are not absolute on non-Windows systems */
+	test_join_unrooted("/foo/\\bar", 4, "\\bar", "/foo");
+	test_join_unrooted("c:/foo/\\bar", 7, "\\bar", "c:/foo/");
+#endif
+
 	/* Base is returned when it's provided and is the prefix */
 	test_join_unrooted("c:/foo/bar/foobar", 6, "c:/foo/bar/foobar", "c:/foo");
 	test_join_unrooted("c:/foo/bar/foobar", 10, "c:/foo/bar/foobar", "c:/foo/bar");
@@ -350,5 +360,16 @@ void test_path_core__join_unrooted(void)
 	/* Trailing slash in the base is ignored */
 	test_join_unrooted("c:/foo/bar/foobar", 6, "c:/foo/bar/foobar", "c:/foo/");
 
-	git_buf_free(&out);
+	git_buf_dispose(&out);
+}
+
+void test_path_core__join_unrooted_respects_funny_windows_roots(void)
+{
+	test_join_unrooted("💩:/foo/bar/foobar", 9, "bar/foobar", "💩:/foo");
+	test_join_unrooted("💩:/foo/bar/foobar", 13, "foobar", "💩:/foo/bar");
+	test_join_unrooted("💩:/foo", 5, "💩:/foo", "💩:/asdf");
+	test_join_unrooted("💩:/foo/bar", 5, "💩:/foo/bar", "💩:/asdf");
+	test_join_unrooted("💩:/foo/bar/foobar", 9, "💩:/foo/bar/foobar", "💩:/foo");
+	test_join_unrooted("💩:/foo/bar/foobar", 13, "💩:/foo/bar/foobar", "💩:/foo/bar");
+	test_join_unrooted("💩:/foo/bar/foobar", 9, "💩:/foo/bar/foobar", "💩:/foo/");
 }

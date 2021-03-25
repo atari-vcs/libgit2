@@ -7,11 +7,14 @@
 
 #include "global.h"
 
+#include "alloc.h"
 #include "hash.h"
 #include "sysdir.h"
 #include "filter.h"
 #include "merge_driver.h"
-#include "streams/curl.h"
+#include "pool.h"
+#include "streams/registry.h"
+#include "streams/mbedtls.h"
 #include "streams/openssl.h"
 #include "thread-utils.h"
 #include "git2/global.h"
@@ -24,9 +27,24 @@
 
 git_mutex git__mwindow_mutex;
 
-#define MAX_SHUTDOWN_CB 10
+typedef int (*git_global_init_fn)(void);
 
-static git_global_shutdown_fn git__shutdown_callbacks[MAX_SHUTDOWN_CB];
+static git_global_init_fn git__init_callbacks[] = {
+	git_allocator_global_init,
+	git_hash_global_init,
+	git_sysdir_global_init,
+	git_filter_global_init,
+	git_merge_driver_global_init,
+	git_transport_ssh_global_init,
+	git_stream_registry_global_init,
+	git_openssl_stream_global_init,
+	git_mbedtls_stream_global_init,
+	git_mwindow_global_init,
+	git_pool_global_init
+};
+
+static git_global_shutdown_fn git__shutdown_callbacks[ARRAY_SIZE(git__init_callbacks)];
+
 static git_atomic git__n_shutdown_callbacks;
 static git_atomic git__n_inits;
 char *git__user_agent;
@@ -35,7 +53,7 @@ char *git__ssl_ciphers;
 void git__on_shutdown(git_global_shutdown_fn callback)
 {
 	int count = git_atomic_inc(&git__n_shutdown_callbacks);
-	assert(count <= MAX_SHUTDOWN_CB && count > 0);
+	assert(count <= (int) ARRAY_SIZE(git__shutdown_callbacks) && count > 0);
 	git__shutdown_callbacks[count - 1] = callback;
 }
 
@@ -50,6 +68,7 @@ static void git__global_state_cleanup(git_global_st *st)
 
 static int init_common(void)
 {
+	size_t i;
 	int ret;
 
 	/* Initialize the CRT debug allocator first, before our first malloc */
@@ -58,15 +77,10 @@ static int init_common(void)
 	git_win32__stack_init();
 #endif
 
-	/* Initialize any other subsystems that have global state */
-	if ((ret = git_hash_global_init()) == 0 &&
-		(ret = git_sysdir_global_init()) == 0 &&
-		(ret = git_filter_global_init()) == 0 &&
-		(ret = git_merge_driver_global_init()) == 0 &&
-		(ret = git_transport_ssh_global_init()) == 0 &&
-		(ret = git_openssl_stream_global_init()) == 0 &&
-		(ret = git_curl_stream_global_init()) == 0)
-		ret = git_mwindow_global_init();
+	/* Initialize subsystems that have global state */
+	for (i = 0; i < ARRAY_SIZE(git__init_callbacks); i++)
+		if ((ret = git__init_callbacks[i]()) != 0)
+			break;
 
 	GIT_MEMORY_BARRIER;
 
@@ -129,14 +143,21 @@ static void shutdown_common(void)
  */
 #if defined(GIT_THREADS) && defined(GIT_WIN32)
 
-static DWORD _tls_index;
+static DWORD _fls_index;
 static volatile LONG _mutex = 0;
+
+static void WINAPI fls_free(void *st)
+{
+	git__global_state_cleanup(st);
+	git__free(st);
+}
 
 static int synchronized_threads_init(void)
 {
 	int error;
 
-	_tls_index = TlsAlloc();
+	if ((_fls_index = FlsAlloc(fls_free)) == FLS_OUT_OF_INDEXES)
+		return -1;
 
 	git_threads_init();
 
@@ -178,9 +199,7 @@ int git_libgit2_shutdown(void)
 	if ((ret = git_atomic_dec(&git__n_inits)) == 0) {
 		shutdown_common();
 
-		git__free_tls_data();
-
-		TlsFree(_tls_index);
+		FlsFree(_fls_index);
 		git_mutex_free(&git__mwindow_mutex);
 
 #if defined(GIT_MSVC_CRTDBG)
@@ -201,7 +220,7 @@ git_global_st *git__global_state(void)
 
 	assert(git_atomic_get(&git__n_inits) > 0);
 
-	if ((ptr = TlsGetValue(_tls_index)) != NULL)
+	if ((ptr = FlsGetValue(_fls_index)) != NULL)
 		return ptr;
 
 	ptr = git__calloc(1, sizeof(git_global_st));
@@ -210,41 +229,8 @@ git_global_st *git__global_state(void)
 
 	git_buf_init(&ptr->error_buf, 0);
 
-	TlsSetValue(_tls_index, ptr);
+	FlsSetValue(_fls_index, ptr);
 	return ptr;
-}
-
-/**
- * Free the TLS data associated with this thread.
- * This should only be used by the thread as it
- * is exiting.
- */
-void git__free_tls_data(void)
-{
-	void *ptr = TlsGetValue(_tls_index);
-	if (!ptr)
-		return;
-
-	git__global_state_cleanup(ptr);
-	git__free(ptr);
-	TlsSetValue(_tls_index, NULL);
-}
-
-BOOL WINAPI DllMain(HINSTANCE hInstDll, DWORD fdwReason, LPVOID lpvReserved)
-{
-	GIT_UNUSED(hInstDll);
-	GIT_UNUSED(lpvReserved);
-
-	/* This is how Windows lets us know our thread is being shut down */
-	if (fdwReason == DLL_THREAD_DETACH) {
-		git__free_tls_data();
-	}
-
-	/*
-	 * Windows pays attention to this during library loading. We don't do anything
-	 * so we trivially succeed.
-	 */
-	return TRUE;
 }
 
 #elif defined(GIT_THREADS) && defined(_POSIX_THREADS)
@@ -274,10 +260,10 @@ int git_libgit2_init(void)
 {
 	int ret, err;
 
-	ret = git_atomic_inc(&git__n_inits);
-
 	if ((err = pthread_mutex_lock(&_init_mutex)) != 0)
 		return err;
+
+	ret = git_atomic_inc(&git__n_inits);
 	err = pthread_once(&_once_init, init_once);
 	err |= pthread_mutex_unlock(&_init_mutex);
 
@@ -291,13 +277,13 @@ int git_libgit2_shutdown(void)
 {
 	void *ptr = NULL;
 	pthread_once_t new_once = PTHREAD_ONCE_INIT;
-	int ret;
+	int error, ret;
+
+	if ((error = pthread_mutex_lock(&_init_mutex)) != 0)
+		return error;
 
 	if ((ret = git_atomic_dec(&git__n_inits)) != 0)
-		return ret;
-
-	if ((ret = pthread_mutex_lock(&_init_mutex)) != 0)
-		return ret;
+		goto out;
 
 	/* Shut down any subsystems that have global state */
 	shutdown_common();
@@ -312,10 +298,11 @@ int git_libgit2_shutdown(void)
 	git_mutex_free(&git__mwindow_mutex);
 	_once_init = new_once;
 
-	if ((ret = pthread_mutex_unlock(&_init_mutex)) != 0)
-		return ret;
+out:
+	if ((error = pthread_mutex_unlock(&_init_mutex)) != 0)
+		return error;
 
-	return 0;
+	return ret;
 }
 
 git_global_st *git__global_state(void)
